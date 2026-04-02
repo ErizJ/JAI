@@ -1,0 +1,11 @@
+go 1.25.0
+
+use (
+	a2a-server
+	app
+	benchmark
+	common
+	core
+	mcp-server
+	model
+)
