@@ -1,5 +1,6 @@
 import type { AgentMarket } from './a2a'
 import type { Tool } from './tool'
+import type { Skill } from './skill'
 
 // 消息内容类型
 export interface MessageContent {
@@ -168,6 +169,11 @@ export interface Agent {
   workflows?: AgentWorkflow[]
   contexts?: Context[]
   agentMarkets?: AgentMarket[]
+  skills?: Skill[]
+
+  // DeepAgent 配置
+  mode?: AgentMode
+  deepConfig?: DeepConfig
 }
 
 // 智能体列表响应
@@ -215,4 +221,72 @@ export interface ChatMessage {
   content: string
   role: string
   createdAt: string
+}
+
+// ==================== DeepAgent 类型定义 ====================
+
+/**
+ * Agent 运行模式
+ */
+export type AgentMode = 'general' | 'supervisor' | 'deep'
+
+/**
+ * DeepAgent 子 Agent 配置
+ */
+export interface DeepSubAgent {
+  name: string
+  description: string
+  instruction: string
+  model_name?: string
+}
+
+/**
+ * DeepAgent 配置
+ */
+export interface DeepConfig {
+  max_iterations?: number
+  enable_todos?: boolean
+  sub_agents?: DeepSubAgent[]
+  sub_agent_ids?: string[] // 子 Agent ID 列表，引用现有 Agent
+  task_description?: string // 任务描述模板
+}
+
+/**
+ * 代码审查请求（DeepAgent 对话）
+ */
+export interface CodeReviewRequest {
+  code: string
+  language?: string
+  filePath?: string
+  focusAreas?: Array<'security' | 'performance' | 'style'>
+  description?: string
+}
+
+/**
+ * DeepAgent 流式响应消息
+ */
+export interface DeepAgentStreamMessage {
+  agentName: string
+  toolName?: string
+  content: string
+}
+
+/**
+ * 创建 DeepAgent 请求
+ */
+export interface CreateDeepAgentRequest {
+  name: string
+  description?: string
+  status?: 'draft' | 'published' | 'archived'
+  mode: 'deep'
+  deepConfig: DeepConfig
+}
+
+/**
+ * 更新 DeepAgent 请求
+ */
+export interface UpdateDeepAgentRequest {
+  id: string
+  mode?: AgentMode
+  deepConfig?: DeepConfig
 }

@@ -13,8 +13,15 @@ import type {
   Model,
   ChatSession,
   ChatMessage,
+  CreateDeepAgentRequest,
+  UpdateDeepAgentRequest,
+  DeepConfig,
+  CodeReviewRequest,
+  DeepAgentStreamMessage,
+  DeepAgentMessage,
 } from '@/types/agent'
 import { useUserStore } from '@/stores/user'
+import type { AssociateAgentSkillsRequest, RemoveAgentSkillRequest } from '@/types/skill'
 
 export const AgentService = {
   // 获取智能体列表
@@ -413,6 +420,194 @@ export const AgentService = {
       }
     } catch (err) {
       console.error(`向智能体 ${agentId} 发送消息失败:`, err)
+      if (onError) onError(err)
+      throw err
+    }
+  },
+
+  // ==================== DeepAgent APIs ====================
+
+  /**
+   * 创建 DeepAgent（深度任务编排模式）
+   */
+  async createDeepAgent(data: CreateDeepAgentRequest): Promise<Agent> {
+    try {
+      return await api.post('/v1/agents/create', data)
+    } catch (err) {
+      console.error('创建 DeepAgent 失败:', err)
+      throw err
+    }
+  },
+
+  /**
+   * 更新 DeepAgent 配置
+   */
+  async updateDeepAgent(data: UpdateDeepAgentRequest): Promise<Agent> {
+    try {
+      return await api.put('/v1/agents/update', data)
+    } catch (err) {
+      console.error(`更新 DeepAgent ${data.id} 失败:`, err)
+      throw err
+    }
+  },
+
+  /**
+   * 关联 Agent 与 Skills
+   */
+  async addAgentSkills(data: AssociateAgentSkillsRequest): Promise<void> {
+    await api.post(`/v1/agents/${data.agentId}/skills`, data)
+  },
+
+  /**
+   * 移除 Agent-Skill 关联
+   */
+  async removeAgentSkill(data: RemoveAgentSkillRequest): Promise<void> {
+    await api.post(`/v1/agents/${data.agentId}/skills/${data.skillId}`)
+  },
+
+  /**
+   * 发送代码审查请求到 DeepAgent（流式响应）
+   */
+  async sendCodeReviewStream(
+    agentId: string,
+    request: CodeReviewRequest,
+    onMessage: (message: DeepAgentStreamMessage) => void,
+    onComplete?: () => void,
+    onError?: (error: any) => void,
+    sessionId?: string,
+  ): Promise<void> {
+    try {
+      const userStore = useUserStore()
+      const response = await fetch(`/api/v1/agents/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${userStore.token || ''}`,
+        },
+        body: JSON.stringify({
+          agentId,
+          message: JSON.stringify(request),
+          sessionId,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      if (!response.body) {
+        throw new Error('ReadableStream not supported')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            if (onComplete) onComplete()
+            break
+          }
+
+          const chunk = decoder.decode(value, { stream: true })
+
+          // 解析 SSE 格式数据
+          const lines = chunk.split('\n')
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6))
+                onMessage(data)
+              } catch (e) {
+                // 忽略解析失败的行
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (onError) onError(error)
+        throw error
+      } finally {
+        reader.releaseLock()
+      }
+    } catch (err) {
+      console.error(`向 DeepAgent ${agentId} 发送代码审查请求失败:`, err)
+      if (onError) onError(err)
+      throw err
+    }
+  },
+
+  /**
+   * 发送消息到 DeepAgent（通用流式对话，支持多轮协作）
+   */
+  async sendDeepAgentStream(
+    agentId: string,
+    message: {
+      message: string
+      sessionId?: string
+    },
+    onMessage: (message: DeepAgentStreamMessage) => void,
+    onComplete?: () => void,
+    onError?: (error: any) => void,
+  ): Promise<void> {
+    try {
+      const userStore = useUserStore()
+      const response = await fetch(`/api/v1/agents/deep/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${userStore.token || ''}`,
+        },
+        body: JSON.stringify({
+          agentId: agentId,
+          message: message.message,
+          sessionId: message.sessionId,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      if (!response.body) {
+        throw new Error('ReadableStream not supported')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            if (onComplete) onComplete()
+            break
+          }
+
+          const chunk = decoder.decode(value, { stream: true })
+
+          // 解析 SSE 格式数据
+          const lines = chunk.split('\n')
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6))
+                onMessage(data)
+              } catch (e) {
+                // 忽略解析失败的行
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (onError) onError(error)
+        throw error
+      } finally {
+        reader.releaseLock()
+      }
+    } catch (err) {
+      console.error(`向 DeepAgent ${agentId} 发送消息失败:`, err)
       if (onError) onError(err)
       throw err
     }

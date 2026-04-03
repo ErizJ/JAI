@@ -35,70 +35,20 @@
             <span>思考中...</span>
           </div>
 
-          <!-- 交互状态展示 -->
-          <div
-            v-if="message.interactionStatus && message.interactionStatus.length > 0"
-            class="interaction-status-container"
-          >
-            <div
-              v-for="interaction in message.interactionStatus"
-              :key="interaction.id"
-              class="interaction-item"
-              :class="interaction.status"
-            >
-              <el-icon class="status-icon">
-                <component :is="getInteractionIcon(interaction.status)" />
-              </el-icon>
-              <span class="status-text">
-                <template v-if="interaction.action === 'tool_call'">
-                  <template v-if="interaction.status === 'running'"
-                    >正在调用工具: {{ interaction.toolName }}</template
-                  >
-                  <template v-else-if="interaction.status === 'completed'"
-                    >调用工具成功: {{ interaction.toolName }}</template
-                  >
-                  <template v-else-if="interaction.status === 'error'"
-                    >调用工具失败: {{ interaction.toolName }}</template
-                  >
-                </template>
-                <template v-else-if="interaction.action === 'workflow_execution'">
-                  <template v-if="interaction.status === 'running'"
-                    >正在执行工作流: {{ interaction.toolName }}</template
-                  >
-                  <template v-else-if="interaction.status === 'completed'"
-                    >执行工作流成功: {{ interaction.toolName }}</template
-                  >
-                  <template v-else-if="interaction.status === 'error'"
-                    >执行工作流失败: {{ interaction.toolName }}</template
-                  >
-                </template>
-                <template v-else-if="interaction.action === 'knowledge_retrieval'">
-                  <template v-if="interaction.status === 'running'"
-                    >正在检索知识库: {{ interaction.toolName }}</template
-                  >
-                  <template v-else-if="interaction.status === 'completed'"
-                    >检索知识库成功: {{ interaction.toolName }}</template
-                  >
-                  <template v-else-if="interaction.status === 'error'"
-                    >检索知识库失败: {{ interaction.toolName }}</template
-                  >
-                </template>
-                <template v-else>
-                  <template v-if="interaction.status === 'running'"
-                    >{{ interaction.toolName }}: {{ interaction.details }}</template
-                  >
-                  <template v-else-if="interaction.status === 'completed'"
-                    >{{ interaction.toolName }}: {{ interaction.details }}</template
-                  >
-                  <template v-else-if="interaction.status === 'error'"
-                    >{{ interaction.toolName }}: {{ interaction.details }}</template
-                  >
-                </template>
-              </span>
-            </div>
-          </div>
           <!-- 消息内容 -->
           <div v-for="(content, idx) in message.contents" :key="idx" class="message-content">
+            <!-- 复制按钮 -->
+            <el-button
+              v-if="content.type !== 'image'"
+              type="primary"
+              text
+              size="small"
+              :icon="CopyDocument"
+              class="copy-content-btn"
+              @click="copyMessageContent(content, message)"
+            >
+              复制
+            </el-button>
             <div
               v-if="content.type === 'text' && content.content && content.content.trim().length > 0"
               class="text-content"
@@ -295,6 +245,10 @@ import {
   RefreshRight,
   Check,
   Warning,
+  ArrowRight,
+  CircleCheck,
+  View,
+  ArrowDown,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import TypewriterText from '@/components/common/TypewriterText.vue'
@@ -440,6 +394,35 @@ const copyCode = (content) => {
     })
 }
 
+// 复制消息内容
+const copyMessageContent = (content, message) => {
+  let textToCopy = ''
+
+  if (content.type === 'text' || content.type === 'agent_call') {
+    textToCopy = content.content || ''
+  } else if (content.type === 'htmlDisplay') {
+    textToCopy = content.content || ''
+  } else if (content.type === 'code') {
+    textToCopy = content.content || ''
+  } else if (content.type === 'link') {
+    textToCopy = content.content || ''
+  }
+
+  if (!textToCopy) {
+    ElMessage.warning('没有可复制的内容')
+    return
+  }
+
+  navigator.clipboard
+    .writeText(textToCopy)
+    .then(() => {
+      ElMessage.success('内容已复制到剪贴板')
+    })
+    .catch(() => {
+      ElMessage.error('复制失败')
+    })
+}
+
 // 复制HTML内容
 const copyHtml = (content) => {
   navigator.clipboard
@@ -563,20 +546,6 @@ const getWorkflowStatusType = (status) => {
       return 'info'
   }
 }
-
-const getInteractionIcon = (status) => {
-  // 根据交互状态返回对应的图标
-  switch (status) {
-    case 'running':
-      return RefreshRight
-    case 'completed':
-      return Check
-    case 'error':
-      return Warning
-    default:
-      return Tools
-  }
-}
 </script>
 
 <style scoped>
@@ -623,6 +592,20 @@ const getInteractionIcon = (status) => {
 
 .message-content {
   margin-bottom: 8px;
+  position: relative;
+  padding-bottom: 28px;
+}
+
+.copy-content-btn {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.message-content:hover .copy-content-btn {
+  opacity: 1;
 }
 
 .thinking-indicator {
@@ -1153,5 +1136,191 @@ const getInteractionIcon = (status) => {
 .completed-icon {
   font-size: 14px;
   margin-left: 8px;
+}
+
+.iteration-tag {
+  background-color: rgba(255, 255, 255, 0.2) !important;
+  color: white !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+@keyframes pulse-border {
+  0%,
+  100% {
+    border-color: #91d5ff;
+    box-shadow: 0 0 0 0 rgba(145, 213, 255, 0.4);
+  }
+  50% {
+    border-color: #409eff;
+    box-shadow: 0 0 0 4px rgba(145, 213, 255, 0.2);
+  }
+}
+
+.task-name {
+  flex: 1;
+  font-size: 13px;
+}
+
+/* 思考过程样式 */
+.thinking-process {
+  border-bottom: 1px solid #e0d5f9;
+}
+
+.thinking-process-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background-color: rgba(118, 75, 162, 0.1);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #764ba2;
+  transition: background-color 0.3s;
+}
+
+.thinking-process-header:hover {
+  background-color: rgba(118, 75, 162, 0.15);
+}
+
+.toggle-icon {
+  margin-left: auto;
+  transition: transform 0.3s;
+}
+
+.toggle-icon.is-reverse {
+  transform: rotate(180deg);
+}
+
+.thinking-process-body {
+  padding: 12px 16px;
+  background-color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  color: #666;
+  line-height: 1.6;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Worker 结果样式 */
+.worker-results {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e0d5f9;
+}
+
+.worker-results-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #764ba2;
+  margin-bottom: 10px;
+}
+
+.worker-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.worker-result-item {
+  background-color: white;
+  border-radius: 8px;
+  border: 1px solid #e0d5f9;
+  overflow: hidden;
+}
+
+.worker-result-item.running {
+  border-color: #91d5ff;
+}
+
+.worker-result-item.completed {
+  border-color: #b7eb8f;
+}
+
+.worker-result-item.error {
+  border-color: #ffa39e;
+}
+
+.worker-result-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background-color: rgba(248, 245, 255, 0.8);
+  border-bottom: 1px solid #e0d5f9;
+}
+
+.worker-avatar-sm {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.worker-result-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.worker-result-content {
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.worker-result-content :deep(p) {
+  margin-bottom: 0.5em;
+}
+
+.worker-result-content :deep(pre) {
+  background-color: #f6f8fa;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.worker-result-content :deep(code) {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+}
+
+/* DeepAgent 主体内容 */
+.deep-agent-body {
+  padding: 16px;
+  background-color: white;
+}
+
+.deep-agent-content {
+  line-height: 1.7;
+}
+
+.deep-agent-content :deep(p) {
+  margin-bottom: 1em;
+}
+
+.deep-agent-content :deep(pre) {
+  background-color: #f6f8fa;
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+
+.deep-agent-content :deep(code) {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 13px;
+}
+
+.deep-agent-content :deep(ul),
+.deep-agent-content :deep(ol) {
+  margin-left: 1.5em;
+  margin-bottom: 1em;
+}
+
+.deep-agent-content :deep(li) {
+  margin-bottom: 0.3em;
 }
 </style>

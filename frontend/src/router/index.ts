@@ -30,6 +30,9 @@ import AgentMarket from '@/views/AgentMarket.vue'
 import HomeView from '@/views/HomeView.vue'
 import AgentExecute from '@/views/AgentExecute.vue'
 
+// Skill views
+import SkillMarket from '@/views/SkillMarket.vue'
+
 // Cloud Storage view
 import CloudStorageView from '@/views/CloudStorageView.vue'
 
@@ -170,6 +173,11 @@ export const routes: RouteRecordRaw[] = [
         path: 'agent-market',
         name: 'AgentMarket',
         component: AgentMarket,
+      },
+      {
+        path: 'skill-market',
+        name: 'SkillMarket',
+        component: SkillMarket,
       },
     ],
   },

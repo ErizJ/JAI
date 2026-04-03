@@ -16,48 +16,21 @@
       </template>
     </el-dialog>
 
-    <!-- 工具选择对话框 -->
-    <ToolSelectionDialog
-      v-model:visible="toolSelectionVisible"
-      :tools="availableTools"
-      :tool-type-map="toolTypeMap"
-      :selected-tool-ids="agent?.tools?.map(t => t.id) || []"
-      @submit="handleToolsSelected"
-      @cancel="toolSelectionVisible = false"
-    />
-
-    <!-- 工作流选择对话框 -->
-    <WorkflowSelectionDialog
-      v-model:visible="workflowSelectionVisible"
-      :available-workflows="availableWorkflows"
-      @submit="handleWorkflowsSelected"
-      @cancel="workflowSelectionVisible = false"
-    />
-
-    <!-- 知识库选择对话框 -->
-    <KnowledgeBaseSelectionDialog
-      v-model:visible="knowledgeBaseSelectionVisible"
-      :available-knowledge-bases="availableKnowledgeBases"
-      @submit="handleKnowledgeBasesSelected"
-      @cancel="knowledgeBaseSelectionVisible = false"
-    />
-
-    <!-- Agent选择对话框 -->
-    <AgentSelectionDialog
-      v-model:visible="agentSelectionVisible"
-      :current-agent-id="agentId"
-      @submit="handleAgentCalled"
-      @cancel="agentSelectionVisible = false"
+    <!-- 资源管理弹框 -->
+    <ResourceManagementDialog
+      v-model:visible="resourceManagementVisible"
+      :agent-id="agentId"
+      @refresh="loadAgentResources"
     />
 
     <!-- 智能体信息编辑对话框 -->
-    <el-dialog v-model="agentInfoEditorVisible" title="编辑智能体信息" width="500px">
-      <el-form :model="agentInfoForm" label-width="80px">
+    <el-dialog v-model="agentInfoEditorVisible" title="编辑智能体信息" width="600px">
+      <el-form :model="agentInfoForm" label-width="100px">
         <el-form-item label="名称">
           <el-input v-model="agentInfoForm.name" />
         </el-form-item>
         <el-form-item label="描述">
-          <el-input v-model="agentInfoForm.description" type="textarea" />
+          <el-input v-model="agentInfoForm.description" type="textarea" :rows="3" />
         </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="agentInfoForm.status" style="width: 100%">
@@ -69,6 +42,71 @@
             />
           </el-select>
         </el-form-item>
+
+        <!-- DeepAgent 配置（仅 deep 模式显示） -->
+        <template v-if="agentInfoForm.mode === 'deep'">
+          <el-divider content-position="left">DeepAgent 配置</el-divider>
+
+          <el-form-item label="最大迭代">
+            <el-input-number
+              v-model="agentInfoForm.deepConfig.max_iterations"
+              :min="1"
+              :max="200"
+              :step="1"
+            />
+            <span class="config-hint">多轮协作的最大迭代次数</span>
+          </el-form-item>
+
+          <el-form-item label="待办管理">
+            <el-switch
+              v-model="agentInfoForm.deepConfig.enable_todos"
+              active-text="启用"
+              inactive-text="禁用"
+            />
+          </el-form-item>
+
+          <el-form-item label="任务描述">
+            <el-input
+              v-model="agentInfoForm.deepConfig.task_description"
+              type="textarea"
+              :rows="2"
+              placeholder="任务描述模板（可选）"
+              show-word-limit
+              maxlength="500"
+            />
+          </el-form-item>
+
+          <el-form-item label="子智能体">
+            <div class="sub-agents-display">
+              <!-- 已选择的子智能体标签 -->
+              <div v-if="selectedSubAgents.length > 0" class="selected-sub-agents">
+                <el-tag
+                  v-for="subAgent in selectedSubAgents"
+                  :key="subAgent.id"
+                  closable
+                  type="success"
+                  effect="light"
+                  class="sub-agent-tag"
+                  @close="removeSubAgent(subAgent.id)"
+                >
+                  {{ subAgent.name }}
+                </el-tag>
+              </div>
+              <div v-else class="no-sub-agents">
+                <el-text type="info">暂未选择子智能体</el-text>
+              </div>
+              <el-button
+                type="primary"
+                size="small"
+                @click="openSubAgentSelectionDialog"
+                class="select-sub-agent-btn"
+              >
+                <el-icon><Plus /></el-icon>
+                选择子智能体
+              </el-button>
+            </div>
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
@@ -77,6 +115,14 @@
         </span>
       </template>
     </el-dialog>
+
+    <!-- 子智能体选择弹框 -->
+    <SubAgentSelectionDialog
+      v-model:visible="subAgentSelectionVisible"
+      :exclude-agent-id="agentId"
+      :initial-selected-ids="agentInfoForm.deepConfig.sub_agent_ids"
+      @confirm="handleSubAgentSelectionConfirm"
+    />
 
     <!-- 会话管理器 -->
     <el-drawer v-model="sessionManagerVisible" title="会话管理" direction="rtl" size="400px">
@@ -129,6 +175,79 @@
               </el-tag>
             </el-form-item>
 
+            <!-- DeepAgent 模式标识 -->
+            <el-form-item v-if="agent.mode === 'deep'" label="运行模式">
+              <el-tag type="warning" effect="dark" class="mode-tag">
+                <el-icon><Connection /></el-icon>
+                DeepAgent 深度模式
+              </el-tag>
+            </el-form-item>
+
+            <!-- DeepAgent 配置信息 -->
+            <template v-if="agent.mode === 'deep' && agent.deepConfig">
+              <el-divider content-position="left">DeepAgent 配置</el-divider>
+
+              <el-form-item label="最大迭代">
+                <el-input-number
+                  v-model="agent.deepConfig.max_iterations"
+                  :min="1"
+                  :max="200"
+                  :step="1"
+                  style="width: 120px"
+                />
+                <span class="config-hint">轮多轮协作的最大迭代次数</span>
+              </el-form-item>
+
+              <el-form-item label="待办管理">
+                <el-switch
+                  v-model="agent.deepConfig.enable_todos"
+                  active-text="启用"
+                  inactive-text="禁用"
+                />
+              </el-form-item>
+
+              <!-- Orchestrator 配置 -->
+              <el-form-item label="Orchestrator">
+                <div class="orchestrator-info">
+                  <el-tag type="primary" size="small">中央协调器</el-tag>
+                  <span class="orchestrator-desc">负责任务分解与调度</span>
+                </div>
+              </el-form-item>
+
+              <!-- Workers 列表 -->
+              <el-form-item label="Workers" v-if="agent.deepConfig.sub_agents?.length">
+                <div class="workers-list">
+                  <el-collapse>
+                    <el-collapse-item
+                      :title="`子智能体列表 (${agent.deepConfig.sub_agents.length})`"
+                    >
+                      <div
+                        v-for="(subAgent, index) in agent.deepConfig.sub_agents"
+                        :key="index"
+                        class="worker-item"
+                      >
+                        <div class="worker-header">
+                          <el-avatar :size="28" class="worker-avatar">
+                            {{ subAgent.name.charAt(0).toUpperCase() }}
+                          </el-avatar>
+                          <span class="worker-name">{{ subAgent.name }}</span>
+                        </div>
+                        <div class="worker-description">{{ subAgent.description }}</div>
+                        <el-tag
+                          v-if="subAgent.model_name"
+                          type="info"
+                          size="small"
+                          class="worker-model"
+                        >
+                          {{ subAgent.model_name }}
+                        </el-tag>
+                      </div>
+                    </el-collapse-item>
+                  </el-collapse>
+                </div>
+              </el-form-item>
+            </template>
+
             <el-form-item label="系统提示词">
               <MilkdownEditor v-model="agent.systemPrompt" class="system-prompt-editor" />
             </el-form-item>
@@ -152,7 +271,7 @@
                 <el-option
                   v-for="provider in chatModelProviders"
                   :key="provider.id"
-                  :label="getProviderName(provider.provider)"
+                  :label="provider.name"
                   :value="provider.id"
                 />
               </el-select>
@@ -210,201 +329,12 @@
             </el-form-item>
             <div class="config-actions">
               <el-button type="primary" @click="saveConfig">保存配置</el-button>
+              <el-button type="success" @click="openResourceManagement">
+                <el-icon><Connection /></el-icon>资源管理
+              </el-button>
             </div>
           </el-form>
         </el-card>
-      </div>
-
-      <!-- 中间：工具、工作流、知识库等资源区域 -->
-      <div class="resources-section">
-        <el-tabs type="border-card" class="resources-tabs">
-          <el-tab-pane label="工具">
-            <div class="resources-content">
-              <div class="resources-header">
-                <el-button @click="addTool" type="primary" size="small">
-                  <el-icon><Plus /></el-icon>添加工具
-                </el-button>
-              </div>
-              <div v-if="agent?.tools && agent.tools.length > 0">
-                <el-table :data="agent.tools" style="width: 100%" size="small">
-                  <el-table-column prop="name" label="工具名称" />
-                  <el-table-column prop="description" label="描述">
-                    <template #default="{ row }">
-                      <span :title="row.description" class="description-cell">
-                        {{
-                          row.description?.length > 50
-                            ? row.description.substring(0, 50) + '...'
-                            : row.description || '-'
-                        }}
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="150">
-                    <template #default="{ row }">
-                      <el-button size="small" type="danger" @click="removeTool(row)"
-                        >移除</el-button
-                      >
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-              <div v-else class="empty-resources">
-                <el-empty description="暂无工具" />
-              </div>
-            </div>
-          </el-tab-pane>
-
-          <el-tab-pane label="工作流">
-            <div class="resources-content">
-              <div class="resources-header">
-                <el-button @click="addWorkflow" type="primary" size="small">
-                  <el-icon><Plus /></el-icon>添加工作流
-                </el-button>
-              </div>
-              <div v-if="agent?.workflows && agent.workflows.length > 0">
-                <el-table :data="agent.workflows" style="width: 100%" size="small">
-                  <el-table-column prop="name" label="工作流名称" />
-                  <el-table-column prop="description" label="描述">
-                    <template #default="{ row }">
-                      <span :title="row.description" class="description-cell">
-                        {{
-                          row.description?.length > 50
-                            ? row.description.substring(0, 50) + '...'
-                            : row.description || '-'
-                        }}
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="默认" width="80">
-                    <template #default="{ row }">
-                      <el-tag v-if="row.is_default" type="success">默认</el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="状态" width="80">
-                    <template #default="{ row }">
-                      <el-tag :type="row.status === 'enabled' ? 'success' : 'info'">
-                        {{ row.status === 'enabled' ? '启用' : '禁用' }}
-                      </el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="200">
-                    <template #default="{ row }">
-                      <el-button
-                        size="small"
-                        type="success"
-                        @click="setDefaultWorkflow(row)"
-                        :disabled="row.is_default"
-                      >
-                        设为默认
-                      </el-button>
-                      <el-button
-                        size="small"
-                        :type="row.status === 'enabled' ? 'info' : 'success'"
-                        @click="toggleWorkflowStatus(row)"
-                      >
-                        {{ row.status === 'enabled' ? '禁用' : '启用' }}
-                      </el-button>
-                      <el-button size="small" type="danger" @click="removeWorkflow(row)"
-                        >移除</el-button
-                      >
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-              <div v-else class="empty-resources">
-                <el-empty description="暂无工作流" />
-              </div>
-            </div>
-          </el-tab-pane>
-
-          <el-tab-pane label="知识库">
-            <div class="resources-content">
-              <div class="resources-header">
-                <el-button @click="addKnowledgeBase" type="primary" size="small">
-                  <el-icon><Plus /></el-icon>添加知识库
-                </el-button>
-              </div>
-              <div v-if="agent?.knowledgeBases && agent.knowledgeBases.length > 0">
-                <el-table :data="agent.knowledgeBases" style="width: 100%" size="small">
-                  <el-table-column prop="name" label="知识库名称" />
-                  <el-table-column prop="description" label="描述">
-                    <template #default="{ row }">
-                      <span :title="row.description" class="description-cell">
-                        {{
-                          row.description?.length > 50
-                            ? row.description.substring(0, 50) + '...'
-                            : row.description || '-'
-                        }}
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="file_count" label="文件数" width="80" />
-                  <el-table-column label="状态" width="80">
-                    <template #default="{ row }">
-                      <el-tag :type="row.status === 'enabled' ? 'success' : 'info'">
-                        {{ row.status === 'enabled' ? '启用' : '禁用' }}
-                      </el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="150">
-                    <template #default="{ row }">
-                      <el-button
-                        size="small"
-                        :type="row.status === 'enabled' ? 'info' : 'success'"
-                        @click="toggleKnowledgeBaseStatus(row)"
-                      >
-                        {{ row.status === 'enabled' ? '禁用' : '启用' }}
-                      </el-button>
-                      <el-button size="small" type="danger" @click="removeKnowledgeBase(row)"
-                        >移除</el-button
-                      >
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-              <div v-else class="empty-resources">
-                <el-empty description="暂无知识库" />
-              </div>
-            </div>
-          </el-tab-pane>
-
-          <!-- 新增智能体Tab -->
-          <el-tab-pane label="智能体">
-            <div class="resources-content">
-              <div class="resources-header">
-                <el-button @click="addAgent" type="primary" size="small">
-                  <el-icon><Plus /></el-icon>添加智能体
-                </el-button>
-              </div>
-              <div v-if="agent?.agentMarkets && agent.agentMarkets.length > 0">
-                <el-table :data="agent.agentMarkets" style="width: 100%" size="small">
-                  <el-table-column prop="name" label="智能体名称" />
-                  <el-table-column prop="description" label="描述">
-                    <template #default="{ row }">
-                      <span :title="row.description" class="description-cell">
-                        {{
-                          row.description?.length > 50
-                            ? row.description.substring(0, 50) + '...'
-                            : row.description || '-'
-                        }}
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="150">
-                    <template #default="{ row }">
-                      <el-button size="small" type="danger" @click="removeAgent(row)"
-                        >移除</el-button
-                      >
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-              <div v-else class="empty-resources">
-                <el-empty description="暂无关联智能体" />
-              </div>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
       </div>
 
       <!-- 右侧：聊天区域 -->
@@ -438,17 +368,24 @@
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Connection, Edit, Plus, More, Clock } from '@element-plus/icons-vue'
+import {
+  ArrowLeft,
+  Connection,
+  Edit,
+  Plus,
+  More,
+  Clock,
+  Cpu,
+  InfoFilled,
+} from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 
 import ChatSection from '@/components/agent/ChatSection.vue'
 import RichTextEditor from '@/components/RichTextEditor.vue'
 import MilkdownEditor from '@/components/MilkdownEditor.vue'
-import ToolSelectionDialog from '@/components/dialogs/ToolSelectionDialog.vue'
-import WorkflowSelectionDialog from '@/components/dialogs/WorkflowSelectionDialog.vue'
-import KnowledgeBaseSelectionDialog from '@/components/dialogs/KnowledgeBaseSelectionDialog.vue'
-import AgentSelectionDialog from '@/components/dialogs/AgentSelectionDialog.vue'
+import ResourceManagementDialog from '@/components/dialogs/ResourceManagementDialog.vue'
 import SessionManager from '@/components/agent/SessionManager.vue'
+import SubAgentSelectionDialog from '@/components/dialogs/SubAgentSelectionDialog.vue'
 import { AgentService } from '@/api/agentService'
 import { ToolService } from '@/api/toolService'
 import * as WorkflowService from '@/api/workflow'
@@ -516,7 +453,78 @@ const agentInfoForm = ref({
   name: '',
   description: '',
   status: 'draft',
+  mode: 'general',
+  deepConfig: {
+    max_iterations: 10,
+    enable_todos: true,
+    sub_agent_ids: [],
+    task_description: '',
+  },
 })
+
+// 子智能体选择弹框相关
+const subAgentSelectionVisible = ref(false)
+const selectedSubAgents = ref([])
+
+// 打开子智能体选择弹框
+const openSubAgentSelectionDialog = () => {
+  subAgentSelectionVisible.value = true
+}
+
+// 处理子智能体选择确认
+const handleSubAgentSelectionConfirm = (selectedIds) => {
+  agentInfoForm.value.deepConfig.sub_agent_ids = selectedIds
+  // 加载选中的子智能体信息用于显示
+  loadSelectedSubAgentsInfo(selectedIds)
+}
+
+// 加载已选子智能体的信息
+const loadSelectedSubAgentsInfo = async (ids) => {
+  if (!ids || ids.length === 0) {
+    selectedSubAgents.value = []
+    return
+  }
+  try {
+    // 这里简化处理，实际应该批量查询
+    const agents = []
+    for (const id of ids) {
+      try {
+        const agent = await AgentService.getAgent(id)
+        agents.push(agent)
+      } catch (e) {
+        console.error(`加载智能体 ${id} 失败:`, e)
+      }
+    }
+    selectedSubAgents.value = agents
+  } catch (error) {
+    console.error('加载子智能体信息失败:', error)
+  }
+}
+
+// 移除子智能体
+const removeSubAgent = (id) => {
+  agentInfoForm.value.deepConfig.sub_agent_ids =
+    agentInfoForm.value.deepConfig.sub_agent_ids.filter((subId) => subId !== id)
+  selectedSubAgents.value = selectedSubAgents.value.filter((agent) => agent.id !== id)
+}
+
+// 所有智能体列表（用于子智能体选择）
+const allAgents = ref([])
+
+// 可选择的子智能体列表（排除当前智能体自身和已归档的）
+const availableSubAgents = computed(() => {
+  return allAgents.value.filter((a) => a.id !== agentId.value && a.status !== 'archived')
+})
+
+// 加载所有智能体列表
+const loadAllAgents = async () => {
+  try {
+    const agents = await AgentService.listAllAgents()
+    allAgents.value = agents || []
+  } catch (error) {
+    console.error('加载智能体列表失败:', error)
+  }
+}
 
 // 状态选项
 const statusOptions = [
@@ -525,6 +533,9 @@ const statusOptions = [
   { value: 'published', label: '已发布' },
   { value: 'archived', label: '已归档' },
 ]
+
+// 资源管理弹框
+const resourceManagementVisible = ref(false)
 
 // 工具选择相关
 const toolSelectionVisible = ref(false)
@@ -576,34 +587,84 @@ const getStatusLabel = (status) => {
 }
 
 // 打开智能体信息编辑器
-const openAgentInfoEditor = () => {
+const openAgentInfoEditor = async () => {
   agentInfoForm.value = {
     name: agent.value.name,
     description: agent.value.description,
     status: agent.value.status,
+    mode: agent.value.mode || 'general',
+    deepConfig: {
+      max_iterations: agent.value.deepConfig?.max_iterations ?? 10,
+      enable_todos: agent.value.deepConfig?.enable_todos ?? true,
+      sub_agent_ids: agent.value.deepConfig?.sub_agent_ids || [],
+      task_description: agent.value.deepConfig?.task_description || '',
+    },
   }
+
+  // 如果是 DeepAgent 模式，加载已选子智能体信息
+  if (agent.value.mode === 'deep') {
+    await loadSelectedSubAgentsInfo(agentInfoForm.value.deepConfig.sub_agent_ids)
+  }
+
   agentInfoEditorVisible.value = true
 }
 
 // 保存智能体信息
 const saveAgentInfo = async () => {
   try {
-    await AgentService.updateAgent({
+    const updateData = {
       id: agentId.value,
       name: agentInfoForm.value.name,
       description: agentInfoForm.value.description,
       status: agentInfoForm.value.status,
-    })
+    }
+
+    // DeepAgent 模式添加 deepConfig
+    if (agentInfoForm.value.mode === 'deep') {
+      updateData.deepConfig = {
+        max_iterations: agentInfoForm.value.deepConfig.max_iterations,
+        enable_todos: agentInfoForm.value.deepConfig.enable_todos,
+        sub_agent_ids:
+          agentInfoForm.value.deepConfig.sub_agent_ids.length > 0
+            ? agentInfoForm.value.deepConfig.sub_agent_ids
+            : undefined,
+        task_description: agentInfoForm.value.deepConfig.task_description || undefined,
+      }
+    }
+
+    await AgentService.updateAgent(updateData)
 
     // 更新本地agent数据
     agent.value.name = agentInfoForm.value.name
     agent.value.description = agentInfoForm.value.description
     agent.value.status = agentInfoForm.value.status
+    if (agentInfoForm.value.mode === 'deep') {
+      agent.value.deepConfig = { ...agentInfoForm.value.deepConfig }
+    }
 
     agentInfoEditorVisible.value = false
     ElMessage.success('智能体信息保存成功')
   } catch (error) {
     ElMessage.error(`保存失败: ${error.message || '未知错误'}`)
+  }
+}
+
+// 打开资源管理弹框
+const openResourceManagement = () => {
+  resourceManagementVisible.value = true
+}
+
+// 加载智能体资源
+const loadAgentResources = async () => {
+  if (!agentId.value) return
+  try {
+    const agentData = await AgentService.getAgent(agentId.value)
+    agent.value.tools = agentData.tools || []
+    agent.value.workflows = agentData.workflows || []
+    agent.value.knowledgeBases = agentData.knowledgeBases || []
+    agent.value.agentMarkets = agentData.agentMarkets || []
+  } catch (error) {
+    console.error('加载资源失败:', error)
   }
 }
 
@@ -743,9 +804,7 @@ onMounted(async () => {
       // 设置选中的对话模型提供商和模型
       if (agent.value.modelProvider) {
         // 查找对应的提供商ID
-        const provider = chatModelProviders.value.find(
-          (p) => p.provider === agent.value.modelProvider,
-        )
+        const provider = chatModelProviders.value.find((p) => p.name === agent.value.modelProvider)
         if (provider) {
           selectedProvider.value = provider.id
           await loadChatModels(provider.id)
@@ -825,7 +884,6 @@ const loadSessionMessages = async (sessionId) => {
         try {
           // 尝试解析JSON格式的内容
           const parsedContent = JSON.parse(msg.content)
-
           // 如果是agent_answer类型的消息
           if (parsedContent.action === 'agent_answer') {
             var isThinking = false
@@ -1116,85 +1174,11 @@ const sendMessage = async () => {
               console.error('解析会话创建消息失败:', e)
             }
           }
-
-          // 检测特殊标记
-          // if (payload.trim() === '<think>') {
-          //   if (messageIndex < messages.value.length) {
-          //     messages.value[messageIndex].thinking = true
-          //   }
-          //   continue
-          // }
-          // if (payload.startsWith('{"action":"thinking"')) {
-          //   if (messageIndex < messages.value.length) {
-          //     messages.value[messageIndex].thinking = true
-          //   }
-          //   const finalAnswerData = JSON.parse(payload)
-          //   if (finalAnswerData.data) {
-          //     messages.value[messageIndex].thinkingContent =
-          //       (messages.value[messageIndex].thinkingContent || '') + finalAnswerData.data
-          //   }
-          //   continue
-          // }
-          // if (!payload.startsWith('{"action":"thinking"')) {
-          //   if (messageIndex < messages.value.length) {
-          //     messages.value[messageIndex].thinking = false
-          //   }
-          // }
-          // if (payload.trim() === '</think>') {
-          //   if (messageIndex < messages.value.length) {
-          //     messages.value[messageIndex].thinking = false
-          //   }
-          //   continue
-          // }
-
-          // if (payload.trim() === '\u001a') {
-          //   // END_OF_TEXT unicode字符
-          //   if (messageIndex < messages.value.length) {
-          //     messages.value[messageIndex].thinking = false
-          //   }
-          //   continue
-          // }
-
-          // // 检测HTML显示内容 (新格式)
-          // if (payload.startsWith('{"action":"final_answer"')) {
-          //   try {
-          //     const finalAnswerData = JSON.parse(payload)
-          //     console.log('final_answer:', finalAnswerData)
-          //     if (
-          //       finalAnswerData.data &&
-          //       finalAnswerData.data.type === 'html_display' &&
-          //       finalAnswerData.data.htmlContent
-          //     ) {
-          //       // 创建新的HTML内容消息
-          //       const htmlContent = {
-          //         type: 'htmlDisplay',
-          //         content: extractHtmlFromMarkdown(finalAnswerData.data.htmlContent),
-          //       }
-          //       // 确保消息仍然存在再更新内容
-          //       if (messageIndex < messages.value.length) {
-          //         messages.value[messageIndex].contents = [htmlContent]
-          //         finalAnswerReceived = true
-          //       }
-          //       console.log('final_answer messages:', messages.value)
-          //       continue
-          //     } else {
-          //       if (finalAnswerData.data) {
-          //         messages.value[messageIndex].contents = [
-          //           {
-          //             type: 'text',
-          //             content: finalAnswerData.data,
-          //           },
-          //         ]
-          //         finalAnswerReceived = true
-          //         console.log('final_answer text messages:', messages.value)
-          //         continue
-          //       }
-          //     }
-          //   } catch (e) {
-          //     console.debug('Error parsing final answer data:', e)
-          //   }
-          // }
           console.log('Received message-------:', payload)
+
+          // ==================== DeepAgent 消息处理 ====================
+          // 处理 DeepAgent 流式消息（多智能体协作）
+
           if (payload.startsWith('{"action":"agent_answer"')) {
             const agentCardData = JSON.parse(payload)
             console.log('agent_answer:', agentCardData)
@@ -1204,19 +1188,19 @@ const sendMessage = async () => {
               if (messageIndex < messages.value.length) {
                 // 查找是否已存在相同 agent 的内容块
                 let agentContentIndex = -1
-                for (let i = 0; i < messages.value[messageIndex].contents.length; i++) {
-                  if (
-                    messages.value[messageIndex].contents[i].type === 'agent_call' &&
-                    messages.value[messageIndex].contents[i].agentName ===
-                      agentCardData.agentName &&
-                    !messages.value[messageIndex].contents[i].isThinking &&
-                    !messages.value[messageIndex].contents[i].toolName &&
-                    messages.value[messageIndex].contents[i].toolName === agentCardData.toolName
-                  ) {
-                    agentContentIndex = i
-                    break
-                  }
-                }
+                // for (let i = 0; i < messages.value[messageIndex].contents.length; i++) {
+                //   if (
+                //     messages.value[messageIndex].contents[i].type === 'agent_call' &&
+                //     messages.value[messageIndex].contents[i].agentName ===
+                //       agentCardData.agentName &&
+                //     !messages.value[messageIndex].contents[i].isThinking &&
+                //     !messages.value[messageIndex].contents[i].toolName &&
+                //     messages.value[messageIndex].contents[i].toolName === agentCardData.toolName
+                //   ) {
+                //     agentContentIndex = i
+                //     break
+                //   }
+                // }
 
                 // 如果是纯文本内容且不是状态标记（如"completed"）
                 if (
@@ -1296,6 +1280,27 @@ const sendMessage = async () => {
               continue
             }
           }
+
+          // 检查是否为错误消息
+          if (payload.includes('[ERROR]')) {
+            // 提取错误信息
+            const errorMsg = payload.replace('data: [ERROR] ', '').trim()
+
+            // 确保消息仍然存在
+            if (messageIndex < messages.value.length) {
+              // 添加错误信息到助手消息内容
+              messages.value[messageIndex].contents.push({
+                type: 'text',
+                content: `错误: ${errorMsg}`,
+              })
+
+              // 设置消息状态为错误
+              messages.value[messageIndex].status = 'error'
+            }
+
+            continue
+          }
+
           if (payload.trim() === '[DONE]') {
             // [DONE] 也是一个控制信号
             continue
@@ -1466,7 +1471,7 @@ const saveConfig = async () => {
       id: agentId.value,
       systemPrompt: agent.value.systemPrompt,
       openingDialogue: agent.value.openingDialogue,
-      modelProvider: selectedChatProvider?.provider || '',
+      modelProvider: selectedChatProvider?.name || '',
       modelName: selectedChatModel?.modelName || '',
       modelParameters: agent.value.modelParameters,
       embeddingModelProvider: selectedEmbeddingProviderObj?.provider || '',
@@ -2016,74 +2021,6 @@ const removeAgent = async (agentMarket) => {
   font-style: italic;
 }
 
-.resources-section {
-  width: 250px;
-  display: flex;
-  flex-direction: column;
-  background: var(--el-bg-color);
-  border-radius: var(--el-border-radius-base);
-  border: 1px solid var(--el-border-color);
-  overflow: hidden;
-  box-shadow: var(--el-box-shadow-light);
-  transition: all 0.3s ease;
-  flex-shrink: 0;
-  height: 100%;
-}
-
-.resources-section:hover {
-  box-shadow: var(--el-box-shadow);
-}
-
-.resources-tabs {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-  border: none;
-  border-radius: 0;
-  height: 100%;
-}
-
-.resources-tabs :deep(.el-tabs__header) {
-  margin-bottom: 0;
-  background-color: var(--el-bg-color-page);
-  flex-shrink: 0;
-}
-
-.resources-tabs :deep(.el-tabs__content) {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-.resources-content {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.resources-header {
-  margin-bottom: 12px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.resources-actions {
-  margin-top: 16px;
-  display: flex;
-  gap: 12px;
-  padding-top: 15px;
-  border-top: 1px solid var(--el-border-color-light);
-  flex-shrink: 0;
-}
-
-.empty-resources {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .chat-section-wrapper {
   flex: 1;
   display: flex;
@@ -2207,10 +2144,6 @@ const removeAgent = async (agentMarket) => {
   .config-section {
     width: 320px;
   }
-
-  .resources-section {
-    width: 360px;
-  }
 }
 
 @media (max-width: 1200px) {
@@ -2218,8 +2151,7 @@ const removeAgent = async (agentMarket) => {
     flex-direction: column;
   }
 
-  .config-section,
-  .resources-section {
+  .config-section {
     width: 100%;
     max-height: 300px;
   }
@@ -2243,10 +2175,6 @@ const removeAgent = async (agentMarket) => {
     gap: 12px;
   }
 
-  .resources-section {
-    display: none;
-  }
-
   .config-section {
     max-height: 250px;
   }
@@ -2265,5 +2193,143 @@ const removeAgent = async (agentMarket) => {
     width: 100%;
     justify-content: flex-end;
   }
+}
+
+/* DeepAgent 配置样式 */
+.mode-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.config-hint {
+  margin-left: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.orchestrator-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background-color: var(--el-fill-color-light);
+  border-radius: var(--el-border-radius-base);
+}
+
+.orchestrator-desc {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.workers-list {
+  width: 100%;
+}
+
+.worker-item {
+  padding: 12px;
+  margin-bottom: 8px;
+  background-color: var(--el-fill-color-light);
+  border-radius: var(--el-border-radius-base);
+  border: 1px solid var(--el-border-color-light);
+}
+
+.worker-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.worker-avatar {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.worker-name {
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+}
+
+.worker-description {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
+.worker-model {
+  margin-top: 6px;
+}
+
+/* 子智能体选择器样式 */
+.sub-agent-option {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.sub-agent-name {
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+}
+
+.sub-agent-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub-agent-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.sub-agent-hint .el-icon {
+  font-size: 14px;
+}
+
+/* 子智能体显示区域样式 */
+.sub-agents-display {
+  width: 100%;
+}
+
+.selected-sub-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  min-height: 32px;
+  padding: 8px;
+  background-color: var(--el-fill-color-light);
+  border-radius: 4px;
+  border: 1px solid var(--el-border-color-light);
+}
+
+.sub-agent-tag {
+  margin: 0;
+}
+
+.no-sub-agents {
+  padding: 12px 8px;
+  margin-bottom: 12px;
+  background-color: var(--el-fill-color-light);
+  border-radius: 4px;
+  border: 1px dashed var(--el-border-color);
+  text-align: center;
+}
+
+.select-sub-agent-btn {
+  width: 100%;
 }
 </style>

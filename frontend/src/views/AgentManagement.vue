@@ -147,10 +147,10 @@
     <el-dialog
       v-model="createDialogVisible"
       title="新建智能体"
-      width="500px"
+      width="600px"
       :before-close="handleCreateDialogClose"
     >
-      <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="80px">
+      <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="100px">
         <el-form-item label="名称" prop="name">
           <el-input v-model="createForm.name" placeholder="请输入智能体名称" clearable />
         </el-form-item>
@@ -165,7 +165,7 @@
           />
         </el-form-item>
         <el-form-item label="状态" prop="status">
-          <el-select v-model="createForm.status" placeholder="请选择状态">
+          <el-select v-model="createForm.status" placeholder="请选择状态" style="width: 100%">
             <el-option
               v-for="status in statusOptions"
               :key="status.value"
@@ -174,6 +174,63 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="模式" prop="mode">
+          <el-radio-group v-model="createForm.mode">
+            <el-radio label="general">普通模式</el-radio>
+            <el-radio label="deep">DeepAgent（深度编排）</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <!-- DeepAgent 配置 -->
+        <template v-if="createForm.mode === 'deep'">
+          <el-divider>DeepAgent 配置</el-divider>
+          <el-form-item label="最大迭代" prop="deepConfig.max_iterations">
+            <el-input-number v-model="createForm.deepConfig.max_iterations" :min="1" :max="200" />
+          </el-form-item>
+          <el-form-item label="待办管理" prop="deepConfig.enable_todos">
+            <el-switch v-model="createForm.deepConfig.enable_todos" />
+          </el-form-item>
+          <el-form-item label="子 Agent" prop="deepConfig.sub_agent_ids">
+            <div class="sub-agents-display">
+              <!-- 已选择的子智能体标签 -->
+              <div v-if="selectedSubAgents.length > 0" class="selected-sub-agents">
+                <el-tag
+                  v-for="subAgent in selectedSubAgents"
+                  :key="subAgent.id"
+                  closable
+                  type="success"
+                  effect="light"
+                  class="sub-agent-tag"
+                  @close="removeSubAgent(subAgent.id)"
+                >
+                  {{ subAgent.name }}
+                </el-tag>
+              </div>
+              <div v-else class="no-sub-agents">
+                <el-text type="info">暂未选择子 Agent</el-text>
+              </div>
+              <el-button
+                type="primary"
+                size="small"
+                @click="openSubAgentSelectionDialog"
+                class="select-sub-agent-btn"
+              >
+                <el-icon><Plus /></el-icon>
+                选择子 Agent
+              </el-button>
+            </div>
+          </el-form-item>
+          <el-form-item label="任务描述" prop="deepConfig.task_description">
+            <el-input
+              v-model="createForm.deepConfig.task_description"
+              type="textarea"
+              :rows="2"
+              placeholder="任务描述模板（可选）"
+              show-word-limit
+              maxlength="500"
+            />
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
@@ -184,6 +241,13 @@
         </span>
       </template>
     </el-dialog>
+
+    <!-- 子智能体选择弹框 -->
+    <SubAgentSelectionDialog
+      v-model:visible="subAgentSelectionVisible"
+      :initial-selected-ids="createForm.deepConfig.sub_agent_ids"
+      @confirm="handleSubAgentSelectionConfirm"
+    />
   </div>
 </template>
 
@@ -202,11 +266,13 @@ import {
   CopyDocument,
   Delete,
   Connection,
+  InfoFilled,
 } from '@element-plus/icons-vue'
 import { useAgentStore } from '@/stores/agentStore'
 import type { Agent } from '@/types/agent'
 import { AgentService } from '@/api/agentService'
 import { v4 as uuidv4 } from 'uuid'
+import SubAgentSelectionDialog from '@/components/dialogs/SubAgentSelectionDialog.vue'
 
 const router = useRouter()
 const agentStore = useAgentStore()
@@ -237,6 +303,13 @@ const createForm = ref({
   name: '',
   description: '',
   status: 'draft',
+  mode: 'general' as 'general' | 'deep',
+  deepConfig: {
+    max_iterations: 10,
+    enable_todos: true,
+    sub_agent_ids: [] as string[], // 子 Agent ID 列表
+    task_description: '', // 任务描述模板
+  },
 })
 
 // 新建智能体表单验证规则
@@ -247,6 +320,58 @@ const createRules = ref<FormRules>({
   ],
   description: [{ max: 200, message: '长度不能超过200个字符', trigger: 'blur' }],
   status: [{ required: true, message: '请选择状态', trigger: 'change' }],
+  mode: [{ required: true, message: '请选择模式', trigger: 'change' }],
+})
+
+// 子智能体选择弹框相关
+const subAgentSelectionVisible = ref(false)
+const selectedSubAgents = ref<Agent[]>([])
+
+// 打开子智能体选择弹框
+const openSubAgentSelectionDialog = () => {
+  subAgentSelectionVisible.value = true
+}
+
+// 处理子智能体选择确认
+const handleSubAgentSelectionConfirm = (selectedIds: string[]) => {
+  createForm.value.deepConfig.sub_agent_ids = selectedIds
+  // 加载选中的子智能体信息用于显示
+  loadSelectedSubAgentsInfo(selectedIds)
+}
+
+// 加载已选子智能体的信息
+const loadSelectedSubAgentsInfo = async (ids: string[]) => {
+  if (!ids || ids.length === 0) {
+    selectedSubAgents.value = []
+    return
+  }
+  try {
+    const agents: Agent[] = []
+    for (const id of ids) {
+      try {
+        const agent = await AgentService.getAgent(id)
+        agents.push(agent)
+      } catch (e) {
+        console.error(`加载智能体 ${id} 失败:`, e)
+      }
+    }
+    selectedSubAgents.value = agents
+  } catch (error) {
+    console.error('加载子智能体信息失败:', error)
+  }
+}
+
+// 移除子智能体
+const removeSubAgent = (id: string) => {
+  createForm.value.deepConfig.sub_agent_ids = createForm.value.deepConfig.sub_agent_ids.filter(
+    (subId) => subId !== id,
+  )
+  selectedSubAgents.value = selectedSubAgents.value.filter((agent) => agent.id !== id)
+}
+
+// 计算属性：可用于选择的子 Agent 列表（排除当前正在创建的）
+const availableSubAgents = computed(() => {
+  return agentStore.agents.filter((agent) => agent.status !== 'archived')
 })
 
 // 计算属性
@@ -291,6 +416,13 @@ const handleCreate = () => {
     name: '',
     description: '',
     status: 'draft',
+    mode: 'general',
+    deepConfig: {
+      max_iterations: 10,
+      enable_todos: true,
+      sub_agent_ids: [],
+      task_description: '',
+    },
   }
   // 显示弹窗
   createDialogVisible.value = true
@@ -313,33 +445,27 @@ const handleCreateConfirm = async () => {
     if (valid) {
       isCreating.value = true
       try {
-        // 准备智能体数据
-        const agentData = {
+        // 统一使用 /v1/agents/create 接口创建 Agent
+        const agentData: any = {
           name: createForm.value.name,
           description: createForm.value.description,
           status: createForm.value.status as 'draft' | 'published' | 'archived',
-          // 添加默认值
-          modelProvider: 'openai',
-          modelName: 'gpt-3.5-turbo',
-          modelParameters: {
-            temperature: 0.7,
-            maxTokens: 2000,
-            topP: 1,
-            frequencyPenalty: 0,
-            presencePenalty: 0,
-          },
-          systemPrompt: '',
-          openingDialogue: '',
-          suggestedQuestions: [],
-          creatorId: 'user', // 这里应该从用户状态中获取
-          version: 1,
-          visibility: 'private' as const,
-          invocation_count: 0,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          mode: createForm.value.mode,
         }
 
-        // 调用API创建智能体
+        // DeepAgent 模式添加 deepConfig
+        if (createForm.value.mode === 'deep') {
+          agentData.deepConfig = {
+            max_iterations: createForm.value.deepConfig.max_iterations,
+            enable_todos: createForm.value.deepConfig.enable_todos,
+            sub_agent_ids:
+              createForm.value.deepConfig.sub_agent_ids.length > 0
+                ? createForm.value.deepConfig.sub_agent_ids
+                : undefined,
+            task_description: createForm.value.deepConfig.task_description || undefined,
+          }
+        }
+
         await AgentService.createAgent(agentData)
 
         // 关闭弹窗
@@ -365,6 +491,7 @@ const handleEdit = (agent: Agent) => {
 }
 
 const handleExecute = (agent: Agent) => {
+  // 统一跳转到 Agent 执行页面（DeepAgent 和普通 Agent 共用）
   router.push(`/agents/${agent.id}/execute`)
 }
 
@@ -659,5 +786,107 @@ watch(
   .agent-card {
     max-width: 100%;
   }
+}
+
+/* DeepAgent 配置样式 */
+.sub-agents-section {
+  width: 100%;
+}
+
+.sub-agent-item {
+  background: var(--background-color-light);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--border-radius-base);
+  padding: var(--spacing-base);
+  margin-bottom: var(--spacing-small);
+}
+
+.sub-agent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-small);
+}
+
+.sub-agent-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mb-2 {
+  margin-bottom: 8px;
+}
+
+.add-sub-agent-btn {
+  width: 100%;
+  margin-top: var(--spacing-small);
+}
+
+/* 子 Agent 选择器样式 */
+.sub-agent-option {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.sub-agent-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.sub-agent-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub-agent-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.sub-agent-hint .el-icon {
+  font-size: 14px;
+}
+
+/* 子智能体显示区域样式 */
+.sub-agents-display {
+  width: 100%;
+}
+
+.selected-sub-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  min-height: 32px;
+  padding: 8px;
+  background-color: var(--el-fill-color-light);
+  border-radius: 4px;
+  border: 1px solid var(--el-border-color-light);
+}
+
+.sub-agent-tag {
+  margin: 0;
+}
+
+.no-sub-agents {
+  padding: 12px 8px;
+  margin-bottom: 12px;
+  background-color: var(--el-fill-color-light);
+  border-radius: 4px;
+  border: 1px dashed var(--el-border-color);
+  text-align: center;
+}
+
+.select-sub-agent-btn {
+  width: 100%;
 }
 </style>

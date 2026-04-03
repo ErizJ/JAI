@@ -51,6 +51,10 @@
             <el-icon><Connection /></el-icon>
             <span>Agent市场</span>
           </router-link>
+          <router-link v-if="isAuthenticated && showSidebar" to="/skill-market" class="nav-link">
+            <el-icon><Tools /></el-icon>
+            <span>技能市场</span>
+          </router-link>
         </nav>
 
         <div v-if="isAuthenticated" class="user-actions">

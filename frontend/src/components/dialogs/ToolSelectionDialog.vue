@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import type { Tools } from '@/types/tool'
 import { MCP, ToolService } from '@/api/toolService'
 import { ElMessage, type TabPaneName } from 'element-plus'
@@ -14,7 +14,6 @@ const props = defineProps<{
   visible: boolean
   tools: Tools[]
   toolTypeMap: Record<string, { name: string; tagType: string }>
-  selectedToolIds?: string[] // 已选中的工具ID列表
 }>()
 
 // 修改emit定义，传递工具和类型信息
@@ -27,7 +26,6 @@ const emit = defineEmits<{
 const activeTab = ref('system')
 const selectedTools = ref<ToolWithType[]>([])
 const loading = ref(false)
-const tableRef = ref<any>(null) // 表格引用
 
 // 分页相关
 const pagination = ref({
@@ -42,48 +40,6 @@ const tableData = ref<Tools[]>([])
 // MCP工具数据
 const mcpTools = ref<Tools[]>([])
 const mcpToolsLoaded = ref(false)
-
-// 同步表格选中状态
-const syncTableSelection = () => {
-  if (!tableRef.value) return
-
-  // 清空当前选择
-  tableRef.value.clearSelection()
-
-  // 如果没有已选工具ID，直接返回
-  if (!props.selectedToolIds || props.selectedToolIds.length === 0) return
-
-  // 根据当前标签页选择对应的工具列表
-  const currentTools = activeTab.value === 'system' ? systemTools.value : mcpTools.value
-
-  // 遍历当前工具，如果ID在已选列表中，则选中
-  currentTools.forEach((tool) => {
-    if (props.selectedToolIds?.includes(tool.id)) {
-      tableRef.value.toggleRowSelection(tool, true)
-    }
-  })
-
-  // 更新 selectedTools 数组
-  updateSelectedToolsFromTable()
-}
-
-// 根据表格选中状态更新 selectedTools
-const updateSelectedToolsFromTable = () => {
-  if (!tableRef.value) return
-
-  const currentSelection = tableRef.value.getSelectionRows() as Tools[]
-  // 保留其他标签页的选中状态
-  const otherTools = selectedTools.value.filter(
-    (item) => item.type !== activeTab.value
-  )
-  // 添加当前标签页的选中状态
-  const currentTools = currentSelection.map((tool) => ({
-    tool,
-    type: activeTab.value,
-  }))
-
-  selectedTools.value = [...otherTools, ...currentTools]
-}
 
 // 根据implementation字段判断工具类型
 const getToolType = (tool: Tools) => {
@@ -104,17 +60,10 @@ const filteredTools = computed(() => {
 
 // 修改选择处理逻辑，包含工具类型信息
 const handleSelectionChange = (selection: Tools[]) => {
-  // 保留其他标签页的选中状态
-  const otherTools = selectedTools.value.filter(
-    (item) => item.type !== activeTab.value
-  )
-  // 添加当前标签页的选中状态
-  const currentTools = selection.map((tool) => ({
+  selectedTools.value = selection.map((tool) => ({
     tool,
     type: activeTab.value, // 使用当前标签页作为工具类型
   }))
-
-  selectedTools.value = [...otherTools, ...currentTools]
 }
 
 const getToolTypeTagType = (tool: Tools) => {
@@ -152,19 +101,6 @@ const handleTabChange = (tabName: TabPaneName) => {
   }
 }
 
-// 监听已选工具ID变化
-watch(
-  () => props.selectedToolIds,
-  () => {
-    if (props.visible) {
-      nextTick(() => {
-        syncTableSelection()
-      })
-    }
-  },
-  { deep: true }
-)
-
 const loadMcpTools = async () => {
   loading.value = true
   try {
@@ -189,11 +125,6 @@ const updateTableData = () => {
   const start = (pagination.value.currentPage - 1) * pagination.value.pageSize
   const end = start + pagination.value.pageSize
   tableData.value = filteredTools.value.slice(start, end)
-
-  // 表格数据更新后，同步选中状态
-  nextTick(() => {
-    syncTableSelection()
-  })
 }
 
 const handleSizeChange = (size: number) => {
@@ -236,8 +167,6 @@ watch(
   () => props.visible,
   (newVisible) => {
     if (newVisible) {
-      // 重置选中状态（避免保留上次的选择）
-      selectedTools.value = []
       // 对话框打开时，根据当前标签页加载数据
       if (activeTab.value === 'system') {
         pagination.value.total = systemTools.value.length
@@ -276,15 +205,13 @@ onMounted(() => {
     </el-tabs>
 
     <el-table
-      ref="tableRef"
       :data="tableData"
-      row-key="id"
       @selection-change="handleSelectionChange"
       style="width: 100%"
       height="400"
       v-loading="loading"
     >
-      <el-table-column type="selection" width="55" :reserve-selection="true" />
+      <el-table-column type="selection" width="55" />
       <el-table-column prop="name" label="名称" min-width="120">
         <template #default="{ row }">
           <div class="tool-name-cell">
