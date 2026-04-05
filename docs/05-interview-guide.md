@@ -154,6 +154,14 @@
 
 > "AI 服务对普通 Web 服务的最大区别是：① 启动慢（加载模型/建立 ES+Milvus 连接），需要 startupProbe 而不能靠 initialDelaySeconds 硬等；② 请求处理时间长（LLM 调用可能 30 秒以上），HTTP 超时要单独处理（项目用 `SetWriteDeadline(time.Time{})` 取消写超时），K8s Ingress 也需要配置合适的超时时间；③ 流式响应（SSE），Nginx/Ingress 的 proxy_buffering 要关闭，否则 token 会被缓冲批量发送，用户看不到流式效果；④ GPU 资源调度（如果用本地模型），需要 K8s 的 GPU 资源管理插件。"
 
+**Q: CI/CD 流水线怎么设计的？为什么用 Kaniko 而不是 Docker-in-Docker？**
+
+> "项目用 GitLab CI 两阶段流水线：构建阶段用 Kaniko 构建镜像推送 Harbor，部署阶段用 GitOps 模式修改 GitOps 仓库触发 ArgoCD 自动部署。"
+>
+> "选 Kaniko 有两个原因：第一，安全性——Docker-in-Docker 需要 privileged 特权模式，这在生产 K8s 集群里是安全风险（特权容器可以逃逸到宿主机）；Kaniko 在普通容器里模拟镜像构建过程，不需要特权。第二，Kaniko 支持层缓存到 Harbor Registry，24 小时内相同基础层复用，Go 项目的 vendor/依赖层变化不频繁，实际测试构建速度提升了 3-5 倍。"
+>
+> "GitOps 的好处是：CI 只需要 Git 仓库的写权限，不需要 K8s 集群的 kubectl 权限，权限最小化；所有部署历史在 Git 里有记录，回滚只需要 git revert；ArgoCD 会持续对比集群实际状态和 GitOps 仓库的期望状态，漂移时自动修正，集群状态可审计。"
+
 ---
 
 ## 🧠 项目技术栈总结表（背诵用）
@@ -175,7 +183,7 @@
 | 协议 | MCP + A2A + SSE | 工具/智能体协作/流式输出 |
 | 部署 | Docker Compose / K8s | 本地/生产环境 |
 | K8s特性 | HPA + Ingress + PVC | 自动扩容+外部访问+持久化 |
-| CI/CD | GitLab CI | 自动化构建 |
+| CI/CD | GitLab CI + Kaniko + ArgoCD | 构建推镜像 + GitOps 自动部署 |
 
 ---
 

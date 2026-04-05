@@ -227,7 +227,137 @@ result := trigger.(*model.ProviderConfig)
 
 ---
 
-## 7. MCP（Model Context Protocol）集成
+## 7. LLM 模型管理层（两表设计）
+
+### 项目中怎么用的
+
+项目将 LLM 管理拆成两张表，解耦了"厂商配置"和"具体模型"：
+
+```
+provider_configs 表（厂商维度）        llms 表（模型维度）
+┌─────────────────────────┐           ┌─────────────────────────────┐
+│ id                      │◄──FK──────│ provider_config_id          │
+│ provider (ollama/openai/│           │ model_name (gpt-4/qwen-max) │
+│          qwen)          │           │ model_type (chat/embedding/  │
+│ api_key                 │           │            vision)          │
+│ api_base                │           │ config (jsonb: maxTokens...) │
+│ status (active/inactive)│           │ status                      │
+└─────────────────────────┘           └─────────────────────────────┘
+```
+
+**设计优势：**
+- 一个厂商（如 OpenAI）配置一次 API Key，可以绑定多个模型（gpt-4、gpt-4o、text-embedding-3-small）
+- 用户换 API Key 只需改 `ProviderConfig` 表，所有关联模型自动生效
+- `model_type` 区分对话模型（chat）、向量模型（embedding）、视觉模型（vision），Agent 和知识库按类型选择
+
+**Embedding 配置转换（`model/llms.go:76`）：**
+```go
+func (l *LLM) ToEmbeddingConfig() *einos.EmbeddingModelConfig {
+    switch l.ProviderConfig.Provider {
+    case "ollama":
+        return &einos.EmbeddingModelConfig{OllamaConfig: &ollama.EmbeddingConfig{...}}
+    case "openai":
+        return &einos.EmbeddingModelConfig{OpenaiConfig: &openai.EmbeddingConfig{...}}
+    case "dashscope": // 阿里云
+        return &einos.EmbeddingModelConfig{DashscopeConfig: &dashscope.EmbeddingConfig{...}}
+    default: // OpenAI 兼容协议兜底
+        return &einos.EmbeddingModelConfig{OpenaiConfig: ...}
+    }
+}
+```
+
+### 面试标准话术
+
+> "模型管理设计了两层结构：`provider_configs` 存厂商接入信息（API Key/Base URL），`llms` 存具体模型配置，外键关联。这样设计的好处是厂商和模型解耦——一个 OpenAI 账号可以配置 gpt-4、gpt-4o、text-embedding-3-small 等多个模型，改一次 API Key 所有模型都生效。模型按类型（chat/embedding/vision）分类，Agent 对话使用 chat 模型，知识库向量化使用 embedding 模型，视觉工作流使用 vision 模型。目前支持 OpenAI、通义千问、Ollama（本地）、阿里云 DashScope 四种厂商，通过策略模式按 provider 字段路由到对应 SDK。"
+
+---
+
+## 8. Token 计数（tiktoken + sync.Once）
+
+### 项目中怎么用的
+
+```go
+// common/utils/token.go
+var (
+    tkm     *tiktoken.Tiktoken
+    tkmOnce sync.Once     // 保证 tiktoken 实例全局只初始化一次
+)
+
+func GetTokenCount(text string) int {
+    tkmOnce.Do(func() {
+        // cl100k_base 是 GPT-3.5/GPT-4/text-embedding-3 使用的编码
+        tke, _ := tiktoken.GetEncoding("cl100k_base")
+        tkm = tke
+    })
+    if tkm == nil {
+        // 兜底：tiktoken 初始化失败时用字符数估算（保守估计）
+        return len([]rune(text))
+    }
+    tokens := tkm.Encode(text, nil, nil)
+    return len(tokens)
+}
+```
+
+使用场景：文档分块时记录每个 chunk 的 token 数（`document_chunks.token_count`），用于后续限制传入 LLM 的 context 长度。
+
+### 面试标准话术
+
+> "文档分块时需要知道每个 chunk 的 Token 数量，以避免拼接后超过 LLM 的 context window 上限。项目使用 tiktoken（OpenAI 官方分词器的 Go 实现），采用 `cl100k_base` 编码，这是 GPT-4 和 text-embedding-3 系列使用的分词方案，对中英文混合文本计数最准确。tiktoken 实例化有一定开销（需要加载词表文件），所以用 `sync.Once` 做全局单例，只初始化一次。当初始化失败时有兜底：用字符数估算（中文约 1 字符 ≈ 1 token，英文约 4 字符 ≈ 1 token，取保守值直接用 rune 数）。"
+
+---
+
+## 9. Graph 数据结构 + driver.Valuer 接口
+
+### 工作流的数据模型
+
+```go
+// model/workflows.go
+type Workflow struct {
+    Data *Graph `gorm:"column:data;type:jsonb"`  // 整个 DAG 存为 jsonb
+}
+
+type Graph struct {
+    Nodes []*Node `json:"nodes"`
+    Edges []*Edge `json:"edges"`
+}
+
+type Node struct {
+    ID       string                 // VueFlow 节点 ID
+    Type     string                 // "start"/"end"/"textDisplay"/"qwenVL"
+    Data     map[string]interface{} // 节点配置（fieldName/fieldValue/model等）
+    Position *Position              // 前端拖拽坐标（x,y），后端执行不用
+    RetryPolicy *RetryPolicy        // 重试策略（maxRetries/delay）
+}
+
+type Edge struct {
+    Source       string  // 源节点 ID
+    Target       string  // 目标节点 ID
+    SourceHandle string  // 源节点的输出端口名（对应字段名）
+    TargetHandle string  // 目标节点的输入端口名
+}
+```
+
+**driver.Valuer / sql.Scanner 实现（第34-61行）：**
+```go
+// GORM 需要知道如何把 *Graph 序列化存入 PostgreSQL jsonb 字段
+func (j *Graph) Value() (driver.Value, error) {
+    return json.Marshal(j)  // Go struct → JSON bytes → 存入 jsonb
+}
+
+// GORM 需要知道如何从 jsonb 字段反序列化回 *Graph
+func (j *Graph) Scan(value interface{}) error {
+    bytes := value.([]byte)
+    return json.Unmarshal(bytes, j)  // jsonb bytes → Go struct
+}
+```
+
+### 面试标准话术
+
+> "工作流的 DAG 数据（节点 + 边）以 JSONB 格式存在 PostgreSQL 的 `data` 字段里。为了让 GORM 能自动处理 struct 和 jsonb 的双向转换，`Graph` 结构体实现了 `driver.Valuer`（写入时调用，struct→JSON）和 `sql.Scanner`（读取时调用，JSON→struct）接口，这是 Go 数据库编程中处理复杂类型的标准做法。`Edge` 的 `SourceHandle`/`TargetHandle` 字段是字段级数据映射的关键，VueFlow 前端每个节点的每个端口都有一个 handle ID，后端执行时通过这对字段知道把上游节点的哪个输出字段映射到下游节点的哪个输入字段，实现了精细的数据流控制。"
+
+---
+
+## 10. MCP（Model Context Protocol）集成
 
 ### 项目中怎么用的
 
@@ -265,3 +395,161 @@ err := tools.InitK8sClient()  // 初始化 k8s client（使用 kubeconfig 或 se
 ### 面试标准话术
 
 > "项目将 K8s 运维能力封装成 AI 工具，这是一个很有特色的设计。用户可以用自然语言告诉 Agent '帮我查一下 prod 命名空间所有 Pod 的状态'，Agent 会调用 K8sResourceQueryTool，执行 kubectl get pods，返回结构化结果后再由 LLM 翻译成自然语言。这实现了 AI 运维助手的基础能力，是 AIOps 方向的典型应用。"
+
+---
+
+## 11. GitLab CI/CD + GitOps 流水线
+
+### 项目中怎么用的
+
+项目采用 GitLab CI + Kaniko + Harbor + ArgoCD 的完整 GitOps 流水线，分两个 Stage：
+
+```
+代码 push 到 GitLab
+    │
+    ▼
+Stage 1: package（Kaniko 构建镜像）
+    ├── 使用 gcr.io/kaniko-project/executor 镜像
+    ├── 无需 Docker daemon，无需 privileged 特权模式
+    ├── 启用 Harbor 层缓存（TTL 24h，加速增量构建）
+    ├── 镜像 tag = {SHORT_SHA}-{PIPELINE_ID}（可追溯）
+    └── 同时打 latest 标签
+    │   输出 image-tag.txt（artifact 传给下一 stage）
+    ▼
+Stage 2: deploy（GitOps 模式，不直接 kubectl）
+    ├── git clone mszlu-ai-gitops 仓库
+    ├── 根据分支判断环境：master → prod，develop → dev
+    ├── sed 修改 overlays/${ENV}/app-deployment-patch.yaml 中的 image 字段
+    ├── git commit + git push [ci skip]
+    └── ArgoCD 监听到 gitops 仓库变更，自动同步部署
+```
+
+**关键技术决策：**
+
+1. **Kaniko 替代 Docker-in-Docker（DinD）：**
+```yaml
+image:
+  name: gcr.io/kaniko-project/executor:debug
+  entrypoint: [""]
+# 不需要：privileged: true（DinD 需要）
+# 不需要：挂载 /var/run/docker.sock
+```
+Kaniko 在普通容器内部构建镜像（读 Dockerfile → 逐层构建 → 直接推 Registry），规避了 DinD 的安全风险和 K8s 集群的特权模式要求。
+
+2. **层缓存加速：**
+```yaml
+KANIKO_CACHE: "true"
+KANIKO_CACHE_REPO: "${HARBOR_REGISTRY}/cache/kaniko-cache"
+KANIKO_CACHE_TTL: "24h"
+```
+Kaniko 把每一层的构建结果推到 Harbor 的 `cache` 项目，下次构建时拉取缓存层，只重建变更的层（通常是最后几层 Go 代码变更），构建速度可提升 3-5 倍。
+
+3. **GitOps 模式（声明式部署）：**
+```bash
+# CI 只修改 GitOps 仓库中的镜像 tag，不直接执行 kubectl
+sed -i "s|image:.*|image: ${IMAGE_TAG}|g" overlays/${ENV}/app-deployment-patch.yaml
+git commit -m "Update ${ENV} image to ${IMAGE_TAG} [ci skip]"
+git push
+# ArgoCD 自动检测 gitops 仓库变更，与 K8s 集群状态 diff 后 apply
+```
+优点：部署历史完整保留在 Git 中（可回滚到任意版本）；集群状态与 GitOps 仓库始终一致；CI 只需 git 权限，无需 K8s API 权限（安全性好）。
+
+4. **镜像 Tag 策略：**
+```
+{SHORT_SHA}-{PIPELINE_ID}
+例：abc12345-1234
+```
+`SHORT_SHA` 对应源代码 commit，`PIPELINE_ID` 唯一标识流水线，两者组合保证每次构建 tag 唯一且可追溯。
+
+### 面试标准话术
+
+> "CI/CD 方面，项目使用 GitLab CI 流水线，分构建和部署两个阶段。构建阶段用 Kaniko 而不是传统的 Docker-in-Docker，Kaniko 在普通容器里就能构建镜像，不需要 K8s 节点开启 privileged 特权模式，安全性更好。同时开启了 Harbor 的层缓存，24 小时内相同基础层不重复构建，显著加速了 CI 速度。"
+>
+> "部署阶段采用 GitOps 模式：CI 流水线不直接 kubectl apply，而是修改独立的 GitOps 仓库中的镜像 tag，由 ArgoCD 监听 GitOps 仓库变更并自动同步到 K8s 集群。这样做的好处是：① 所有部署历史都有 Git 记录，回滚只需 git revert；② 集群的期望状态声明在 Git 里，ArgoCD 保证实际状态与声明状态一致；③ CI 只需要 Git 仓库权限，不需要 K8s 集群的直接访问权限，权限边界清晰。分支策略上 master 对应 prod 环境，develop 对应 dev 环境，通过 Kustomize overlays 管理差异配置。"
+
+---
+
+## 12. SSE 压测工具（benchmark）
+
+### 项目中怎么用的
+
+```bash
+# 运行方式
+go run benchmark/agent_chat_benchmark.go \
+  -url http://localhost:8888 \
+  -token "eyJhbGciOiJIUzI1NiIs..." \
+  -agent-id "xxx-xxx-xxx" \
+  -c 20        # 并发数
+  -d 60s       # 压测时长
+```
+
+### 核心实现
+
+**Worker Pool + Channel 模式（`benchmark/agent_chat_benchmark.go`）：**
+```go
+// 工作池：N 个 goroutine 并发请求
+for i := 0; i < config.Concurrency; i++ {
+    wg.Add(1)
+    go worker(config, &wg, resultChan, closeChan)
+}
+
+// 每个 worker 持续请求直到 closeChan 关闭
+func worker(..., stopChan <-chan struct{}) {
+    defer wg.Done()
+    for {
+        select {
+        case <-stopChan:
+            return   // 压测时间到，退出
+        default:
+            result := doRequest(client, config)
+            resultChan <- result
+        }
+    }
+}
+```
+
+**atomic 无锁计数器（避免频繁加锁）：**
+```go
+type Stats struct {
+    TotalRequests   int64  // atomic 读写
+    SuccessRequests int64  // atomic 读写
+    FailedRequests  int64  // atomic 读写
+    TotalDuration   time.Duration  // 需要 mu 保护（非 int64）
+    MinDuration     time.Duration  // 需要 mu 保护
+    MaxDuration     time.Duration  // 需要 mu 保护
+    mu              sync.RWMutex
+}
+
+// 高频路径用 atomic，不加锁
+atomic.AddInt64(&stats.TotalRequests, 1)
+atomic.AddInt64(&stats.SuccessRequests, 1)
+
+// 低频路径（min/max 更新）用 mutex
+stats.mu.Lock()
+if result.Duration < stats.MinDuration {
+    stats.MinDuration = result.Duration
+}
+stats.mu.Unlock()
+```
+
+**SSE 流读取（正确处理流式接口）：**
+```go
+// 普通 HTTP 接口 ReadAll 即可，SSE 需要逐行读直到 [DONE]
+reader := bufio.NewReader(resp.Body)
+for {
+    line, err := reader.ReadString('\n')
+    responseSize += int64(len(line))
+    if bytes.Contains([]byte(line), []byte("[DONE]")) {
+        break   // 收到结束标记，本次请求完成
+    }
+}
+// Duration 从发送请求到收到 [DONE]，表示完整 LLM 响应时间
+```
+
+**注意**：对 SSE 接口压测时，`Duration` 衡量的是从发送请求到接收完最后一个 token 的总时间，不是 TTFT（Time To First Token）。如需测量 TTFT，需要在第一次 `ReadString` 返回非空 data 行时记录时间点。
+
+### 面试标准话术
+
+> "项目有一个针对 SSE 流式接口的压测工具。设计上用 Worker Pool 模式：启动 N 个 goroutine，每个 goroutine 循环不停发请求，通过关闭 `stopChan` channel 来统一终止所有 goroutine。统计模块区分了 atomic 和 mutex 两种同步方式：`int64` 类型的计数器（总请求数/成功数）用 `atomic.AddInt64`，性能比 mutex 好 10 倍以上；但 `time.Duration` 和 min/max 这类需要条件判断的操作还是需要 mutex 保护。"
+>
+> "SSE 接口的压测有个特殊点：不能用 ReadAll 读响应体，因为 SSE 连接是长连接，ReadAll 会一直阻塞。需要用 bufio.Reader 逐行读，识别到 `[DONE]` 标记才算一次请求完成。这里统计的延迟是 End-to-End 的完整流时间，实际用户体验的 TTFT（首 token 延迟）会更短，是衡量 LLM 服务质量的更重要指标。"
